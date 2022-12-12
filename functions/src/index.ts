@@ -19,7 +19,7 @@ admin.firestore().settings({ignoreUndefinedProperties: true});
 
 import {
   genAuthProof,
-  calcEthAddress
+  calcEthAddress,
 } from "./verifier";
 
 exports.genAuthProof = genAuthProof;
