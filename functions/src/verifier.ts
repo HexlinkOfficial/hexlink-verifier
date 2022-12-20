@@ -5,7 +5,7 @@ import {KMS_CONFIG} from "./config";
 import * as crypto from "crypto";
 import * as crc32c from "fast-crc32c";
 import * as ethers from "ethers";
-import {ecdsaRecover, signatureImport, signatureNormalize} from "secp256k1";
+import * as asn1 from "asn1.js";
 
 export enum AuthType {
   OAuth
@@ -23,8 +23,8 @@ export interface AuthProof {
 }
 
 export interface SignedAuthProof extends AuthProof {
-  r: Uint8Array,
-  s: Uint8Array,
+  r: string,
+  s: string,
   v: number
 }
 
@@ -38,12 +38,20 @@ const versionName = client.cryptoKeyVersionPath(
     KMS_CONFIG.versionId
 );
 
+const EcdsaSigAsnParse = asn1.define("EcdsaSig", function(this: any) {
+  this.seq().obj(
+      this.key("r").int(),
+      this.key("s").int(),
+  );
+});
+
 const signWithKmsKey = async function(
     rawAuthProof: AuthProof,
-    chainId: number
+    address: string
 ) {
   const hash = crypto.createHash("sha256");
-  hash.update(JSON.stringify(rawAuthProof));
+  const message = JSON.stringify(rawAuthProof);
+  hash.update(message);
   const digest = hash.digest();
 
   const digestCrc32c = crc32c.calculate(digest);
@@ -71,55 +79,54 @@ const signWithKmsKey = async function(
     throw new Error("AsymmetricSign: response corrupted in-transit");
   }
 
-  const publicKey = await getPublicKey();
-  const publicKeyPem = publicKey.pem || "";
-  const publicKeyDer = crypto.createPublicKey(publicKeyPem)
-      .export({format: "der", type: "spki"});
-  const pubKeyBuf = publicKeyDer.subarray(publicKeyDer.length-65);
-
-  const _64 = signatureImport(<Uint8Array>signResponse.signature);
-  const normalized = signatureNormalize(_64);
-  const r = normalized.slice(0, 32);
-  const s = normalized.slice(32, 64);
-  const recId = await calculateRecoveryId(normalized, digest, pubKeyBuf);
-  const v = await calculateV(chainId, recId);
+  const [r, s] = await calculateRS(signResponse.signature as Buffer);
+  const v = calculateRecoveryParam(
+      digest,
+      r,
+      s,
+      address);
 
   return [r, s, v];
 };
 
-const calculateRecoveryId = async function(
-    signature: Uint8Array,
-    hash: Buffer,
-    uncompressPubKey: Buffer
-) {
-  let recId = -1;
+const calculateRS = async function(signature: Buffer) {
+  const decoded = EcdsaSigAsnParse.decode(signature, "der");
+  const r = "0x" + decoded.r.toString("hex");
+  let s = ethers.BigNumber.from("0x" + decoded.s.toString("hex"));
 
-  for (let i = 0; i < 4; i++) {
-    // try with a recoveryId of i
-    const rec = ecdsaRecover(signature, i, hash, false);
-    if (Buffer.compare(rec, uncompressPubKey) == 0) {
-      recId = i;
-      break;
-    }
+  const secp256k1N = ethers.BigNumber.from(
+      "0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
+  );
+  const secp256k1halfN = secp256k1N.div(ethers.BigNumber.from(2));
+
+  if (s.gt(secp256k1halfN)) {
+    s = secp256k1N.sub(s);
   }
-  if (recId == -1) {
-    throw new Error("Impossible to calculate the recovery id.");
-  }
-  return recId;
+
+  return [r, s.toHexString()];
 };
 
-const calculateV = async function(chainId: number, recovery: number) {
-  if (!chainId || typeof chainId === "number") {
-    // return legacy type ECDSASignature
-    if (chainId && !Number.isSafeInteger(chainId)) {
-      throw new Error("The provided number is greater than MAX_SAFE_INTEGER");
+const calculateRecoveryParam = (
+    digest: Buffer,
+    r: string,
+    s: string,
+    address: string
+) => {
+  let v: number;
+  for (v = 0; v <= 1; v++) {
+    const recoveredEthAddr = ethers.utils.recoverAddress(
+        digest,
+        {r, s, v}
+    ).toLowerCase();
+
+    if (recoveredEthAddr != address.toLowerCase()) {
+      continue;
     }
 
-    const v = chainId ? recovery + (chainId * 2 + 35) : recovery + 27;
     return v;
-  } else {
-    throw new Error("Other chainId type not implemented");
   }
+
+  throw new Error("Failed to calculate recovery param");
 };
 
 const verifiedByOAuth = async function(idToken: string) {
@@ -156,11 +163,11 @@ export const genAuthProof = functions.https.onCall(
       };
 
       // sign authProof
-      const [r, s, v] = await signWithKmsKey(rawAuthProof, data.chainId);
+      const [r, s, v] = await signWithKmsKey(rawAuthProof, data.address);
       const AuthProof: SignedAuthProof = {
         ...rawAuthProof,
-        r: <Uint8Array>r,
-        s: <Uint8Array>s,
+        r: <string>r,
+        s: <string>s,
         v: <number>v,
       };
 
@@ -198,21 +205,8 @@ export const calcEthAddress = functions.https.onCall(
       const rawXY = publicKeyDer.subarray(-64);
 
       const hashXY = ethers.utils.keccak256(rawXY);
-      const hashBuf = Buffer.from(hashXY, "hex");
-      const address = hashBuf.subarray(-20).toString("hex").toLowerCase();
+      const address = "0x" + hashXY.slice(-40);
 
-      const addressHash = ethers.utils.keccak256(address);
-      const addressHashHex = Buffer.from(addressHash, "hex").toString("hex");
-
-      let addressChecksum = "";
-      for (let i = 0; i < address.length; i++) {
-        if (parseInt(addressHashHex[i], 16) > 7) {
-          addressChecksum += address[i].toUpperCase();
-        } else {
-          addressChecksum += address[i];
-        }
-      }
-
-      return addressChecksum;
+      return address;
     }
 );
