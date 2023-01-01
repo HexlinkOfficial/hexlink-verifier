@@ -2,10 +2,10 @@ import * as functions from "firebase-functions";
 import {getEthAddressFromPublicKey, signWithKmsKey} from "./kms";
 import {IdentityType, AuthType} from "./type";
 import {
-  verifiedByIdToken,
   verifyFollowingStatus,
   verifyRetweetStatus,
-} from "./validation";
+} from "./validations/twitterValidation";
+import {verifiedByIdToken} from "./validations/idTokenValidation";
 
 export interface AuthProof {
   requestId: string,
@@ -22,11 +22,10 @@ export interface SignedAuthProof extends AuthProof {
 
 interface OAuthParams {
   idToken: string,
-  accessToken?: string,
-  secret?: string,
   source?: string,
   target?: string,
-  retweetRequired?: boolean, // false by default
+  retweetRequired?: boolean,
+  referencedTweetId?: string,
   tweetId?: string
 }
 
@@ -53,15 +52,12 @@ export const genAuthProof = functions.https.onCall(
           }
 
           if (data.identityType === IdentityType[IdentityType.Twitter]) {
-            if (!params.accessToken || !params.secret || !params.source ||
-              !params.target) {
+            if (!params.source || !params.target) {
               return {code: 400,
                 message: "Invalid input for Twitter validation."};
             }
 
             verified = await verifyFollowingStatus(
-                params.accessToken!,
-                params.secret!,
                 params.source!,
                 params.target!);
 
@@ -69,9 +65,10 @@ export const genAuthProof = functions.https.onCall(
               return {code: 401, message: "The user is not a follower."};
             }
 
-            if (params.retweetRequired && params.tweetId) {
+            if (params.retweetRequired && params.referencedTweetId &&
+                params.tweetId) {
               verified = await verifyRetweetStatus(
-                  params.source!,
+                  params.referencedTweetId!,
                   params.tweetId!);
             }
             if (!verified) {
