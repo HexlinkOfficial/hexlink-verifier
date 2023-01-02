@@ -1,11 +1,8 @@
 import * as functions from "firebase-functions";
 import {getEthAddressFromPublicKey, signWithKmsKey} from "./kms";
-import {IdentityType, AuthType} from "./type";
-import {
-  verifyFollowingStatus,
-  verifyRetweetStatus,
-} from "./validations/twitterValidation";
+import {AuthType} from "./type";
 import {verifiedByIdToken} from "./validations/idTokenValidation";
+import {IDENTITY_VERIFIER_PUB_ADDR} from "./config";
 
 export interface AuthProof {
   requestId: string,
@@ -21,12 +18,7 @@ export interface SignedAuthProof extends AuthProof {
 }
 
 interface OAuthParams {
-  idToken: string,
-  source?: string,
-  target?: string,
-  retweetRequired?: boolean,
-  referencedTweetId?: string,
-  tweetId?: string
+  idToken: string
 }
 
 export const genAuthProof = functions.https.onCall(
@@ -36,50 +28,26 @@ export const genAuthProof = functions.https.onCall(
         return {code: 401, message: "Unauthorized Call"};
       }
 
-      // validation
-      let verified = null;
+      if (!Object.values(AuthType).includes(data.authType)) {
+        return {code: 400,
+          message: "Invalid auth type: " + data.authType};
+      }
+
       switch (data.authType) {
         case AuthType[AuthType.OAuth]: {
           const params: OAuthParams = data.params;
           if (!params || !params.idToken) {
             return {code: 400,
-              message: "Invalid input for IdToken validation."};
+              message: "Invalid input for OAuth validation."};
           }
 
-          verified = await verifiedByIdToken(params.idToken);
+          const verified = await verifiedByIdToken(params.idToken);
           if (!verified) {
             return {code: 401, message: "Invalid Token."};
-          }
-
-          if (data.identityType === IdentityType[IdentityType.Twitter]) {
-            if (!params.source || !params.target) {
-              return {code: 400,
-                message: "Invalid input for Twitter validation."};
-            }
-
-            verified = await verifyFollowingStatus(
-                params.source!,
-                params.target!);
-
-            if (!verified) {
-              return {code: 401, message: "The user is not a follower."};
-            }
-
-            if (params.retweetRequired && params.referencedTweetId &&
-                params.tweetId) {
-              verified = await verifyRetweetStatus(
-                  params.referencedTweetId!,
-                  params.tweetId!);
-            }
-            if (!verified) {
-              return {code: 401,
-                message: "The user hasn't retweeted the required tweet."};
-            }
           }
         }
       }
 
-      // create AuthProf
       const issuedAt = Date.now();
       const rawAuthProof: AuthProof = {
         requestId: data.requestId,
@@ -88,8 +56,9 @@ export const genAuthProof = functions.https.onCall(
         issuedAt: issuedAt,
       };
 
-      // sign AuthProof
-      const [r, s, v] = await signWithKmsKey(rawAuthProof, data.address);
+      const [r, s, v] = await signWithKmsKey(
+          rawAuthProof,
+          IDENTITY_VERIFIER_PUB_ADDR);
       const AuthProof: SignedAuthProof = {
         ...rawAuthProof,
         r: <string>r,
