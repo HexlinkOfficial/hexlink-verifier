@@ -2,9 +2,9 @@ import * as functions from "firebase-functions";
 import {getEthAddressFromPublicKey, signWithKmsKey} from "./kms";
 import {AuthType} from "./type";
 import {verifiedByIdToken} from "./validations/idTokenValidation";
-import {IDENTITY_VERIFIER_PUB_ADDR} from "./config";
 
 export interface AuthProof {
+  name: string,
   requestId: string,
   authType: string,
   identityType: string,
@@ -50,15 +50,16 @@ export const genAuthProof = functions.https.onCall(
 
       const issuedAt = Date.now();
       const rawAuthProof: AuthProof = {
+        name: data.name,
         requestId: data.requestId,
-        authType: data.authType,
-        identityType: data.identityType,
         issuedAt: issuedAt,
+        identityType: data.identityType,
+        authType: data.authType,
       };
 
       const [r, s, v] = await signWithKmsKey(
-          rawAuthProof,
-          IDENTITY_VERIFIER_PUB_ADDR);
+          data.keyType,
+          JSON.stringify(rawAuthProof));
       const AuthProof: SignedAuthProof = {
         ...rawAuthProof,
         r: <string>r,
@@ -69,6 +70,17 @@ export const genAuthProof = functions.https.onCall(
       return {code: 200, authProof: AuthProof};
     });
 
+export const signWithKms = functions.https.onCall(
+    async (data, context) => {
+      const uid = context.auth?.uid;
+      if (!uid) {
+        return {code: 401, message: "Unauthorized Call"};
+      }
+
+      return signWithKmsKey(data.keyType, data.message);
+    }
+);
+
 export const calcEthAddress = functions.https.onCall(
     async (data, context) => {
       const uid = context.auth?.uid;
@@ -76,6 +88,6 @@ export const calcEthAddress = functions.https.onCall(
         return {code: 401, message: "Unauthorized Call"};
       }
 
-      return getEthAddressFromPublicKey();
+      return getEthAddressFromPublicKey(data.keyType);
     }
 );

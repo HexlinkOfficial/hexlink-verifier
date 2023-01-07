@@ -3,20 +3,11 @@ import * as asn1 from "asn1.js";
 import * as crypto from "crypto";
 import * as ethers from "ethers";
 import * as crc32c from "fast-crc32c";
-import {KMS_CONFIG} from "./config";
-import {AuthProof} from "./verifier";
+import {KMS_KEY_TYPE, KMS_CONFIG, KMS_CONFIG_TYPE} from "./config";
 
 const client = new kms.KeyManagementServiceClient();
 
-const versionName = client.cryptoKeyVersionPath(
-    KMS_CONFIG.projectId,
-    KMS_CONFIG.locationId,
-    KMS_CONFIG.keyRingId,
-    KMS_CONFIG.keyId,
-    KMS_CONFIG.versionId
-);
-
-const getPublicKey = async function() {
+const getPublicKey = async function(versionName: string) {
   const [publicKey] = await client.getPublicKey({
     name: versionName,
   });
@@ -33,8 +24,25 @@ const getPublicKey = async function() {
   return publicKey;
 };
 
-export const getEthAddressFromPublicKey = async function() {
-  const publicKey = await getPublicKey();
+const getVersionName = async function(keyType: string) {
+  if (!Object.values(KMS_KEY_TYPE).includes(keyType)) {
+    throw new Error("Invalid key type: " + keyType +
+        ", while getting version name.");
+  }
+
+  const config: KMS_CONFIG_TYPE = KMS_CONFIG.get(keyType)!;
+  return client.cryptoKeyVersionPath(
+      config.projectId,
+      config.locationId,
+      config.keyRingId,
+      config.keyId,
+      config.versionId
+  );
+};
+
+export const getEthAddressFromPublicKey = async function(keyType: string) {
+  const versionName = await getVersionName(keyType);
+  const publicKey = await getPublicKey(versionName);
   const publicKeyPem = publicKey.pem || "";
   const publicKeyDer = crypto.createPublicKey(publicKeyPem)
       .export({format: "der", type: "spki"});
@@ -47,16 +55,16 @@ export const getEthAddressFromPublicKey = async function() {
 };
 
 export const signWithKmsKey = async function(
-    rawAuthProof: AuthProof,
-    address: string
+    keyType:string,
+    message: string
 ) {
   const hash = crypto.createHash("sha256");
-  const message = JSON.stringify(rawAuthProof);
   hash.update(message);
   const digest = hash.digest();
 
   const digestCrc32c = crc32c.calculate(digest);
 
+  const versionName = await getVersionName(keyType);
   const [signResponse] = await client.asymmetricSign({
     name: versionName,
     digest: {
@@ -80,6 +88,7 @@ export const signWithKmsKey = async function(
     throw new Error("AsymmetricSign: response corrupted in-transit");
   }
 
+  const address = KMS_CONFIG.get(keyType)!.publicAddress;
   const [r, s] = await calculateRS(signResponse.signature as Buffer);
   const v = calculateRecoveryParam(
       digest,
@@ -131,7 +140,7 @@ const calculateRecoveryParam = (
       continue;
     }
 
-    return v;
+    return v + 27;
   }
 
   throw new Error("Failed to calculate recovery param");

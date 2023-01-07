@@ -20,7 +20,9 @@ admin.firestore().settings({ignoreUndefinedProperties: true});
 import {
   genAuthProof,
   calcEthAddress,
+  signWithKms,
 } from "./verifier";
 
 exports.genAuthProof = genAuthProof;
 exports.calcEthAddress = calcEthAddress;
+exports.signWithKms = signWithKms;
