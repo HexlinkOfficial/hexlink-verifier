@@ -96,7 +96,10 @@ export const signWithKmsKey = async function(
       s,
       address);
 
-  return [r, s, v];
+  const ref = parseInt("0x80", 16);
+  const signature = "0x" + v + (r.length + ref).toString(16) +
+      r + (s.length + ref).toString(16) + s;
+  return [r, s, v, signature];
 };
 
 const EcdsaSigAsnParse = asn1.define("EcdsaSig", function(this: any) {

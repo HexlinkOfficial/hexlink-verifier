@@ -14,7 +14,8 @@ export interface AuthProof {
 export interface SignedAuthProof extends AuthProof {
   r: string,
   s: string,
-  v: number
+  v: number,
+  signature: string
 }
 
 interface OAuthParams {
@@ -57,7 +58,7 @@ export const genAuthProof = functions.https.onCall(
         authType: data.authType,
       };
 
-      const [r, s, v] = await signWithKmsKey(
+      const [r, s, v, signature] = await signWithKmsKey(
           data.keyType,
           JSON.stringify(rawAuthProof));
       const AuthProof: SignedAuthProof = {
@@ -65,6 +66,7 @@ export const genAuthProof = functions.https.onCall(
         r: <string>r,
         s: <string>s,
         v: <number>v,
+        signature: <string> signature,
       };
 
       return {code: 200, authProof: AuthProof};
