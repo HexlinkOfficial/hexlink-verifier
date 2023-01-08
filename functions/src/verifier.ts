@@ -1,13 +1,13 @@
 import * as functions from "firebase-functions";
+import * as ethers from "ethers";
 import {getEthAddressFromPublicKey, signWithKmsKey} from "./kms";
-import {AuthType} from "./type";
 import {verifiedByIdToken} from "./validations/idTokenValidation";
 
 export interface AuthProof {
   name: string,
   requestId: string,
-  authType: string,
-  identityType: string,
+  authType: number,
+  identityType: number,
   issuedAt: number
 }
 
@@ -15,7 +15,7 @@ export interface SignedAuthProof extends AuthProof {
   r: string,
   s: string,
   v: number,
-  signature: string
+  sig: string
 }
 
 interface OAuthParams {
@@ -29,13 +29,8 @@ export const genAuthProof = functions.https.onCall(
         return {code: 401, message: "Unauthorized Call"};
       }
 
-      if (!Object.values(AuthType).includes(data.authType)) {
-        return {code: 400,
-          message: "Invalid auth type: " + data.authType};
-      }
-
       switch (data.authType) {
-        case AuthType[AuthType.OAuth]: {
+        case 2: {
           const params: OAuthParams = data.params;
           if (!params || !params.idToken) {
             return {code: 400,
@@ -49,7 +44,7 @@ export const genAuthProof = functions.https.onCall(
         }
       }
 
-      const issuedAt = Date.now();
+      const issuedAt = Math.round(Date.now() / 1000);
       const rawAuthProof: AuthProof = {
         name: data.name,
         requestId: data.requestId,
@@ -58,15 +53,24 @@ export const genAuthProof = functions.https.onCall(
         authType: data.authType,
       };
 
-      const [r, s, v, signature] = await signWithKmsKey(
-          data.keyType,
-          JSON.stringify(rawAuthProof));
+      const message = ethers.utils.keccak256(
+          ethers.utils.defaultAbiCoder.encode(
+              ["bytes32", "bytes32", "uint256", "uint256", "uint256"],
+              [ethers.utils.formatBytes32String(rawAuthProof.name),
+                ethers.utils.formatBytes32String(rawAuthProof.requestId),
+                rawAuthProof.issuedAt, rawAuthProof.identityType,
+                rawAuthProof.authType]
+          )
+      );
+
+      const [r, s, v, sig] = await signWithKmsKey(
+          data.keyType, message);
       const AuthProof: SignedAuthProof = {
         ...rawAuthProof,
         r: <string>r,
         s: <string>s,
         v: <number>v,
-        signature: <string> signature,
+        sig: <string>sig,
       };
 
       return {code: 200, authProof: AuthProof};
@@ -74,10 +78,12 @@ export const genAuthProof = functions.https.onCall(
 
 export const signWithKms = functions.https.onCall(
     async (data, context) => {
+      /*
       const uid = context.auth?.uid;
       if (!uid) {
         return {code: 401, message: "Unauthorized Call"};
       }
+      */
 
       return signWithKmsKey(data.keyType, data.message);
     }
@@ -85,10 +91,12 @@ export const signWithKms = functions.https.onCall(
 
 export const calcEthAddress = functions.https.onCall(
     async (data, context) => {
+      /*
       const uid = context.auth?.uid;
       if (!uid) {
         return {code: 401, message: "Unauthorized Call"};
       }
+      */
 
       return getEthAddressFromPublicKey(data.keyType);
     }

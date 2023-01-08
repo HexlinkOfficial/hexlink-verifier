@@ -3,6 +3,7 @@ import * as asn1 from "asn1.js";
 import * as crypto from "crypto";
 import * as ethers from "ethers";
 import * as crc32c from "fast-crc32c";
+import * as BN from "bn.js";
 import {KMS_KEY_TYPE, KMS_CONFIG, KMS_CONFIG_TYPE} from "./config";
 
 const client = new kms.KeyManagementServiceClient();
@@ -47,7 +48,6 @@ export const getEthAddressFromPublicKey = async function(keyType: string) {
   const publicKeyDer = crypto.createPublicKey(publicKeyPem)
       .export({format: "der", type: "spki"});
   const rawXY = publicKeyDer.subarray(-64);
-
   const hashXY = ethers.utils.keccak256(rawXY);
   const address = "0x" + hashXY.slice(-40);
 
@@ -56,19 +56,39 @@ export const getEthAddressFromPublicKey = async function(keyType: string) {
 
 export const signWithKmsKey = async function(
     keyType:string,
-    message: string
-) {
-  const hash = crypto.createHash("sha256");
-  hash.update(message);
-  const digest = hash.digest();
+    message: string) {
+  const messageEthHash = await toEthSignedMessageHash(message);
+  const digestBuffer = Buffer.from(ethers.utils.arrayify(messageEthHash));
 
-  const digestCrc32c = crc32c.calculate(digest);
+  const signature = await getKmsSignature(digestBuffer, keyType);
+  const address = KMS_CONFIG.get(keyType)!.publicAddress;
+  const [r, s] = await calculateRS(signature as Buffer);
+  const v = calculateRecoveryParam(
+      digestBuffer,
+      r,
+      s,
+      address);
+  const rHex = r.toString("hex");
+  const sHex = s.toString("hex");
+  const sig = "0x" + rHex + sHex + v.toString(16);
 
+  return [`0x${rHex}`, `0x${sHex}`, v, sig];
+};
+
+const toEthSignedMessageHash = async function(messageHex: string) {
+  return ethers.utils.keccak256(
+      ethers.utils.solidityPack(["string", "bytes32"],
+          ["\x19Ethereum Signed Message:\n32", messageHex]));
+};
+
+const getKmsSignature = async function(digestBuffer: Buffer, keyType: string) {
+  const digestCrc32c = crc32c.calculate(digestBuffer);
   const versionName = await getVersionName(keyType);
+
   const [signResponse] = await client.asymmetricSign({
     name: versionName,
     digest: {
-      sha256: digest,
+      sha256: digestBuffer,
     },
     digestCrc32c: {
       value: digestCrc32c,
@@ -88,18 +108,7 @@ export const signWithKmsKey = async function(
     throw new Error("AsymmetricSign: response corrupted in-transit");
   }
 
-  const address = KMS_CONFIG.get(keyType)!.publicAddress;
-  const [r, s] = await calculateRS(signResponse.signature as Buffer);
-  const v = calculateRecoveryParam(
-      digest,
-      r,
-      s,
-      address);
-
-  const ref = parseInt("0x80", 16);
-  const signature = "0x" + v + (r.length + ref).toString(16) +
-      r + (s.length + ref).toString(16) + s;
-  return [r, s, v, signature];
+  return signResponse.signature as Buffer;
 };
 
 const EcdsaSigAsnParse = asn1.define("EcdsaSig", function(this: any) {
@@ -111,32 +120,37 @@ const EcdsaSigAsnParse = asn1.define("EcdsaSig", function(this: any) {
 
 const calculateRS = async function(signature: Buffer) {
   const decoded = EcdsaSigAsnParse.decode(signature, "der");
-  const r = "0x" + decoded.r.toString("hex");
-  let s = ethers.BigNumber.from("0x" + decoded.s.toString("hex"));
+  const r: BN = decoded.r;
+  let s: BN = decoded.s;
 
-  const secp256k1N = ethers.BigNumber.from(
-      "0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
+  const secp256k1N = new BN(
+      "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
+      16
   );
-  const secp256k1halfN = secp256k1N.div(ethers.BigNumber.from(2));
+  const secp256k1halfN = secp256k1N.div(new BN(2));
 
   if (s.gt(secp256k1halfN)) {
     s = secp256k1N.sub(s);
   }
 
-  return [r, s.toHexString()];
+  return [r, s];
 };
 
 const calculateRecoveryParam = (
-    digest: Buffer,
-    r: string,
-    s: string,
+    msg: Buffer,
+    r: BN,
+    s: BN,
     address: string
 ) => {
   let v: number;
   for (v = 0; v <= 1; v++) {
     const recoveredEthAddr = ethers.utils.recoverAddress(
-        digest,
-        {r, s, v}
+        `0x${msg.toString("hex")}`,
+        {
+          r: `0x${r.toString("hex")}`,
+          s: `0x${s.toString("hex")}`,
+          v,
+        }
     ).toLowerCase();
 
     if (recoveredEthAddr != address.toLowerCase()) {
