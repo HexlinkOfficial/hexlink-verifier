@@ -1,90 +1,97 @@
 import * as functions from "firebase-functions";
+import {getAuth} from "firebase-admin/auth";
 import * as ethers from "ethers";
 import {getEthAddressFromPublicKey, signWithKmsKey} from "./kms";
-import {verifiedByIdToken} from "./validations/idTokenValidation";
+import {KMS_CONFIG, KMS_KEY_TYPE} from "./config";
+
+const TWITTER_PROVIDER_ID = "twitter.com";
+const OAUTH_AUTH_TYPE = "oauth";
 
 export interface AuthProof {
   name: string,
   requestId: string,
   authType: string,
   identityType: string,
-  issuedAt: number
+  issuedAt: number,
+  signature: string
 }
 
-export interface SignedAuthProof extends AuthProof {
-  r: string,
-  s: string,
-  v: number,
-  sig: string
-}
-
-interface OAuthParams {
-  idToken: string
-}
-
-export const genAuthProof = functions.https.onCall(
+export const genTwitterOAuthProof = functions.https.onCall(
     async (data, context) => {
       const uid = context.auth?.uid;
       if (!uid) {
         return {code: 401, message: "Unauthorized Call"};
       }
 
-      switch (data.authType) {
-        case "oauth": {
-          const params: OAuthParams = data.params;
-          if (!params || !params.idToken) {
-            return {code: 400,
-              message: "Invalid input for OAuth validation."};
-          }
+      const user = await getAuth().getUser(uid);
+      if (!user) {
+        return {code: 400, message: "Invalid uid: failed to get the user."};
+      }
 
-          const verified = await verifiedByIdToken(params.idToken);
-          if (!verified) {
-            return {code: 401, message: "Invalid Token."};
-          }
+      const userInfoList = user.providerData;
+      let twitterUid = "";
+      for (const userInfo of userInfoList) {
+        if (userInfo.providerId.toLowerCase() === TWITTER_PROVIDER_ID) {
+          twitterUid = userInfo.uid;
         }
       }
 
-      const issuedAt = Math.round(Date.now() / 1000);
-      const rawAuthProof: AuthProof = {
-        name: data.name,
-        requestId: data.requestId,
-        issuedAt: issuedAt,
-        identityType: data.identityType,
-        authType: data.authType,
-      };
+      if (!twitterUid || twitterUid.length === 0) {
+        return {code: 400, message: "Invalid uid: not provided with twitter"};
+      }
 
+      const nameHash = genNameHash(TWITTER_PROVIDER_ID, twitterUid);
+
+      const identityType = hash(TWITTER_PROVIDER_ID);
+      const authType = hash(OAUTH_AUTH_TYPE);
+
+      const issuedAt = Math.round(Date.now() / 1000);
       const message = ethers.utils.keccak256(
           ethers.utils.defaultAbiCoder.encode(
               ["bytes32", "bytes32", "uint256", "bytes32", "bytes32"],
-              [ethers.utils.formatBytes32String(rawAuthProof.name),
-                ethers.utils.formatBytes32String(rawAuthProof.requestId),
-                rawAuthProof.issuedAt,
-                ethers.utils.formatBytes32String(rawAuthProof.identityType),
-                ethers.utils.formatBytes32String(rawAuthProof.authType)]
+              [nameHash,
+                data.requestId,
+                issuedAt,
+                identityType,
+                authType]
           )
       );
+      const sig = await signWithKmsKey(
+          KMS_KEY_TYPE[KMS_KEY_TYPE.operator], message);
 
-      const [r, s, v, sig] = await signWithKmsKey(
-          data.keyType, message);
-      const AuthProof: SignedAuthProof = {
-        ...rawAuthProof,
-        r: <string>r,
-        s: <string>s,
-        v: <number>v,
-        sig: <string>sig,
+      const validatorAddr = KMS_CONFIG.get(
+          KMS_KEY_TYPE[KMS_KEY_TYPE.operator]
+      )!.publicAddress;
+      const encodedSig = ethers.utils.defaultAbiCoder.encode(
+          ["address", "bytes"], [validatorAddr, sig]
+      );
+
+      const AuthProof: AuthProof = {
+        name: nameHash,
+        requestId: data.requestId,
+        issuedAt: issuedAt,
+        identityType: TWITTER_PROVIDER_ID,
+        authType: OAUTH_AUTH_TYPE,
+        signature: encodedSig,
       };
 
       return {code: 200, authProof: AuthProof};
     });
 
+const genNameHash = function(prefix: string, uid: string) {
+  return ethers.utils.keccak256(ethers.utils.toUtf8Bytes(`${prefix}:${uid}`));
+};
+
+const hash = function(value: string) {
+  return ethers.utils.keccak256(ethers.utils.toUtf8Bytes(value));
+};
+
 export const signWithKms = functions.https.onCall(
     async (data, context) => {
-      /*
       const uid = context.auth?.uid;
       if (!uid) {
         return {code: 401, message: "Unauthorized Call"};
       }
-      */
 
       return signWithKmsKey(data.keyType, data.message);
     }

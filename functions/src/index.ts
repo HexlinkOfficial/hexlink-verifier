@@ -18,11 +18,11 @@ admin.initializeApp(params);
 admin.firestore().settings({ignoreUndefinedProperties: true});
 
 import {
-  genAuthProof,
+  genTwitterOAuthProof,
   calcEthAddress,
   signWithKms,
 } from "./verifier";
 
-exports.genAuthProof = genAuthProof;
+exports.genTwitterOAuthProof = genTwitterOAuthProof;
 exports.calcEthAddress = calcEthAddress;
 exports.signWithKms = signWithKms;

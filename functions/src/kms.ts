@@ -72,7 +72,7 @@ export const signWithKmsKey = async function(
   const sHex = s.toString("hex");
   const sig = "0x" + rHex + sHex + v.toString(16);
 
-  return [`0x${rHex}`, `0x${sHex}`, v, sig];
+  return sig;
 };
 
 const toEthSignedMessageHash = async function(messageHex: string) {
