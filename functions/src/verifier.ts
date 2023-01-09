@@ -6,8 +6,8 @@ import {verifiedByIdToken} from "./validations/idTokenValidation";
 export interface AuthProof {
   name: string,
   requestId: string,
-  authType: number,
-  identityType: number,
+  authType: string,
+  identityType: string,
   issuedAt: number
 }
 
@@ -30,7 +30,7 @@ export const genAuthProof = functions.https.onCall(
       }
 
       switch (data.authType) {
-        case 2: {
+        case "oauth": {
           const params: OAuthParams = data.params;
           if (!params || !params.idToken) {
             return {code: 400,
@@ -55,11 +55,12 @@ export const genAuthProof = functions.https.onCall(
 
       const message = ethers.utils.keccak256(
           ethers.utils.defaultAbiCoder.encode(
-              ["bytes32", "bytes32", "uint256", "uint256", "uint256"],
+              ["bytes32", "bytes32", "uint256", "bytes32", "bytes32"],
               [ethers.utils.formatBytes32String(rawAuthProof.name),
                 ethers.utils.formatBytes32String(rawAuthProof.requestId),
-                rawAuthProof.issuedAt, rawAuthProof.identityType,
-                rawAuthProof.authType]
+                rawAuthProof.issuedAt,
+                ethers.utils.formatBytes32String(rawAuthProof.identityType),
+                ethers.utils.formatBytes32String(rawAuthProof.authType)]
           )
       );
 
